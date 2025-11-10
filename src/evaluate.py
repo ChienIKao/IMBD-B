@@ -208,7 +208,7 @@ def plot_threshold_analysis(test_data_list, test_labels_list, model_instance, sc
         'best_acc_threshold': thresholds[best_acc_idx]
     }
 
-def evaluate_on_test_set(threshold=0.1, model_dir=None):
+def evaluate_on_test_set(threshold=0.3, model_dir=None):
     """
     在測試集上評估最終模型的性能
 
@@ -400,7 +400,7 @@ def evaluate_on_test_set(threshold=0.1, model_dir=None):
         'res_dir': res_dir
     }
 
-def evaluate_file_level_accuracy(test_data_list, test_labels_list, model_instance, scaler, device, threshold=0.1):
+def evaluate_file_level_accuracy(test_data_list, test_labels_list, model_instance, scaler, device, threshold=0.3):
     """
     在檔案級別評估模型性能（而不是窗口級別）
 

@@ -31,7 +31,7 @@ TEST_RATIO = 0.3          # 測試資料比例 (20%)
 
 # K-Fold 參數
 N_SPLITS = 5          # 5 折交叉驗證
-RANDOM_STATE = 1018   # 隨機種子碼
+RANDOM_STATE = 78   # 隨機種子碼
 # [cite_start]競賽題目要求 F1 score 為決勝標準 [cite: 97]，我們可以用它來儲存最佳模型
 
 # 資料處理參數
