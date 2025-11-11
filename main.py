@@ -32,7 +32,13 @@ def main():
     train_parser = subparsers.add_parser(
         "train", help="開始 K-Fold 交叉驗證並訓練最終模型"
     )
-    # 'train' 指令不需要額外參數，因為設定都在 src/train.py 裡了
+    # 添加可選的隨機種子參數
+    train_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="隨機種子碼 (default: 使用 train.py 中的預設值 78)",
+    )
 
     # --- 4. "evaluate" 指令 ---
     # 當使用者輸入 'python main.py evaluate' 時:
@@ -56,9 +62,32 @@ def main():
 
     # --- 5. "predict" 指令 ---
     # 當使用者輸入 'python main.py predict [檔案路徑]' 時:
-    predict_parser = subparsers.add_parser("predict", help="對新的 CSV 檔案進行推論")
-    # "predict" 指令需要一個「必要的」參數：檔案路徑
-    predict_parser.add_argument("file", type=str, help="要預測的單一 CSV 檔案路徑")
+    predict_parser = subparsers.add_parser("predict", help="對新的 CSV 檔案進行推論 (單一檔案或批次)")
+
+    # 支援兩種模式: 單一檔案或批次預測
+    predict_parser.add_argument(
+        "file",
+        type=str,
+        nargs='?',  # 使 file 變成可選參數
+        default=None,
+        help="要預測的單一 CSV 檔案路徑 (與 --pred-dir 擇一使用)"
+    )
+
+    # 批次預測參數
+    predict_parser.add_argument(
+        "--pred-dir",
+        type=str,
+        default=None,
+        help="批次預測:要預測的資料夾路徑 (包含多個 CSV 檔案)",
+    )
+
+    predict_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./predictions",
+        help="批次預測:輸出結果的目錄路徑 (default: ./predictions)",
+    )
+
     # 我們還可以加入「可選的」參數，來控制推論策略
     predict_parser.add_argument(
         "--strategy",
@@ -88,7 +117,11 @@ def main():
 
     if args.command == "train":
         print("--- 啟動 [訓練] 流程 ---")
-        train.run_training()
+        if args.seed is not None:
+            print(f"--- 使用自訂隨機種子碼: {args.seed} ---")
+            train.run_training(random_state=args.seed)
+        else:
+            train.run_training()
         print("--- [訓練] 流程完畢 ---")
 
     elif args.command == "evaluate":
@@ -101,19 +134,49 @@ def main():
         print("--- [測試集評估] 流程完畢 ---")
 
     elif args.command == "predict":
-        print(f"--- 啟動 [推論] 流程: {args.file} ---")
-        # 將解析到的參數傳遞給 run_inference 函數
-        if hasattr(args, 'model_dir'):
-            model_dir = getattr(args, 'model_dir')
+        # 檢查是單一檔案預測還是批次預測
+        if args.pred_dir:
+            # 批次預測模式
+            print(f"--- 啟動 [批次預測] 流程 ---")
+            print(f"預測資料夾: {args.pred_dir}")
+            print(f"輸出目錄: {args.output_dir}")
+
+            if hasattr(args, 'model_dir'):
+                model_dir = getattr(args, 'model_dir')
+            else:
+                model_dir = None
+
+            predict.batch_predict(
+                pred_dir=args.pred_dir,
+                model_dir=model_dir,
+                threshold=args.threshold,
+                output_dir=args.output_dir,
+                strategy=args.strategy
+            )
+            print(f"--- [批次預測] 流程完畢 ---")
+
+        elif args.file:
+            # 單一檔案預測模式
+            print(f"--- 啟動 [單一預測] 流程: {args.file} ---")
+
+            if hasattr(args, 'model_dir'):
+                model_dir = getattr(args, 'model_dir')
+            else:
+                model_dir = None
+
+            prediction = predict.run_inference(
+                test_file_path=args.file,
+                strategy=args.strategy,
+                threshold=args.threshold,
+                model_dir=model_dir
+            )
+            print(f"--- [單一預測] 流程完畢 ---")
+
         else:
-            model_dir = None
-        prediction = predict.run_inference(
-            test_file_path=args.file,
-            strategy=args.strategy,
-            threshold=args.threshold,
-            model_dir=model_dir
-        )
-        print(f"--- [推論] 流程完畢 ---")
+            print("錯誤: 請指定要預測的檔案 (file) 或資料夾 (--pred-dir)")
+            print("範例:")
+            print("  單一檔案: python main.py predict 檔案.csv --threshold 0.1")
+            print("  批次預測: python main.py predict --pred-dir ./test_data/ --output-dir ./results/ --threshold 0.1")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import joblib
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 使用非交互式後端
-plt.rcParams['font.family'] = ['DejaVu Sans', 'Arial', 'sans-serif']  # 使用英文字體
+# 不指定字體,使用系統預設字體 (競賽環境無外網無法下載字體)
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from datetime import datetime
@@ -256,7 +256,16 @@ def plot_cv_summary(cv_f1_scores, save_dir):
 
 # --- 4. 主要訓練執行函數 ---
 
-def run_training():
+def run_training(random_state=None):
+    """
+    執行完整的訓練流程
+
+    Args:
+        random_state (int, optional): 隨機種子碼。如果為 None,則使用全域設定 RANDOM_STATE
+    """
+
+    # 使用傳入的 random_state 或預設值
+    seed = random_state if random_state is not None else RANDOM_STATE
 
     # 創建時間戳記的訓練目錄
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -272,7 +281,7 @@ def run_training():
     # 設置裝置
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"--- 將使用 {device} 進行訓練 ---")
-    print(f"--- 隨機種子碼: {RANDOM_STATE} ---")
+    print(f"--- 隨機種子碼: {seed} ---")
 
     # --- A. 載入所有原始資料並重新分割 ---
     print("--- 載入原始資料並重新分割 ---")
@@ -290,7 +299,7 @@ def run_training():
         all_labels_list,
         list(range(len(file_names))),  # 加入索引以追蹤檔案名稱
         test_size=TEST_RATIO,
-        random_state=RANDOM_STATE,
+        random_state=seed,
         stratify=all_labels_list  # 保持類別比例
     )
 
@@ -307,7 +316,7 @@ def run_training():
     print(f"    - 狀態2: {sum(1 for label in test_labels_list if label == 1)} 個")
 
     # 顯示詳細的檔案分割資訊
-    print(f"\n=== 詳細分割資訊 (種子碼: {RANDOM_STATE}) ===")
+    print(f"\n=== 詳細分割資訊 (種子碼: {seed}) ===")
     train_state1_files = [name for name, label in zip(train_file_names, train_labels_list) if label == 0]
     train_state2_files = [name for name, label in zip(train_file_names, train_labels_list) if label == 1]
     test_state1_files = [name for name, label in zip(test_file_names, test_labels_list) if label == 0]
@@ -326,7 +335,7 @@ def run_training():
         'test_data_list': test_data_list,
         'test_labels_list': test_labels_list,
         'test_file_names': test_file_names,  # 同時儲存檔案名稱
-        'random_state': RANDOM_STATE  # 儲存種子碼
+        'random_state': seed  # 儲存種子碼
     }, test_data_path)
     print(f"\n測試資料已儲存至: {test_data_path}")
     print(f"(包含檔案名稱和種子碼資訊)")
@@ -341,7 +350,7 @@ def run_training():
 
     # --- B. K-Fold 交叉驗證迴圈 ---
 
-    kfold = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
+    kfold = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=seed)
     cv_f1_scores = []
     fold_histories = []  # 記錄每一折的訓練歷史
 

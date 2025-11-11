@@ -64,7 +64,7 @@ def aggregate_predictions(snippet_preds, strategy="majority_vote", threshold=0.1
 # --- 3. 主要推論執行函數 ---
 
 
-def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model_dir=None):
+def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model_dir=None, verbose=True):
     """
     對單一 CSV 檔案執行完整的推論流程。
 
@@ -73,6 +73,7 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
         strategy (str): 'majority_vote' 或 'mean_prob'
         threshold (float): 投票法閾值
         model_dir (str): 模型目錄路徑，如果為 None 則使用預設目錄
+        verbose (bool): 是否顯示詳細輸出
 
     Returns:
         int: 最終預測 (0 或 1)
@@ -82,8 +83,9 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
     if model_dir is None:
         model_dir = DEFAULT_MODEL_DIR
 
-    print(f"--- 開始推論: {test_file_path} ---")
-    print(f"--- 使用模型目錄: {model_dir} ---")
+    if verbose:
+        print(f"--- 開始推論: {test_file_path} ---")
+        print(f"--- 使用模型目錄: {model_dir} ---")
 
     # 設置裝置
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -114,7 +116,8 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
     model_instance.load_state_dict(torch.load(model_path, map_location=device))
     model_instance.eval()  # **非常重要：設置為評估模式**
 
-    print(f"模型 {FINAL_MODEL_NAME} 和 {FINAL_SCALER_NAME} 載入成功。")
+    if verbose:
+        print(f"模型 {FINAL_MODEL_NAME} 和 {FINAL_SCALER_NAME} 載入成功。")
 
     # --- B. 處理測試檔案 (與訓練時完全一致) ---
 
@@ -141,7 +144,8 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
         )
         return
 
-    print(f"已從檔案中創建 {len(X_snippets)} 個預測片段 (snippets)。")
+    if verbose:
+        print(f"已從檔案中創建 {len(X_snippets)} 個預測片段 (snippets)。")
 
     # 4. 創建 PyTorch DataLoader
     #    (不需要 PyTorch Dataset，我們手動處理批次更簡單)
@@ -174,12 +178,105 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
         all_snippet_probs, strategy=strategy, threshold=threshold
     )
 
-    result_str = "狀態 2 (異常)" if final_prediction == 1 else "狀態 1 (正常)"
-    print(f"\n--- 最終預測結果 ---")
-    print(f"檔案: {os.path.basename(test_file_path)}")
-    print(f"預測: {final_prediction} ( {result_str} )")
+    if verbose:
+        result_str = "狀態 2 (異常)" if final_prediction == 1 else "狀態 1 (正常)"
+        print(f"\n--- 最終預測結果 ---")
+        print(f"檔案: {os.path.basename(test_file_path)}")
+        print(f"預測: {final_prediction} ( {result_str} )")
 
     return final_prediction
+
+
+def batch_predict(pred_dir, model_dir, threshold, output_dir, strategy="majority_vote"):
+    """
+    批次預測整個資料夾的 CSV 檔案
+
+    Args:
+        pred_dir: 要預測的資料夾路徑
+        model_dir: 模型目錄路徑
+        threshold: 預測閾值
+        output_dir: 輸出結果的目錄路徑
+        strategy: 彙總策略
+
+    Returns:
+        results: 預測結果列表
+    """
+    import pandas as pd
+    from tqdm import tqdm
+
+    # 確保輸出目錄存在
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 找出所有 CSV 檔案
+    csv_files = []
+    for root, dirs, files in os.walk(pred_dir):
+        for file in files:
+            if file.endswith('.csv'):
+                csv_files.append(os.path.join(root, file))
+
+    if len(csv_files) == 0:
+        print(f"錯誤: 在 {pred_dir} 中找不到任何 CSV 檔案")
+        return []
+
+    print(f"\n--- 批次預測工具 ---")
+    print(f"預測資料夾: {pred_dir}")
+    print(f"模型目錄: {model_dir}")
+    print(f"Threshold: {threshold}")
+    print(f"策略: {strategy}")
+    print(f"找到 {len(csv_files)} 個檔案")
+    print(f"輸出目錄: {output_dir}")
+    print()
+
+    # 儲存預測結果
+    results = []
+
+    # 使用進度條顯示預測進度
+    print("開始預測...")
+    for file_path in tqdm(csv_files, desc="預測進度"):
+        file_name = os.path.basename(file_path)
+
+        try:
+            # 執行預測 (不顯示詳細輸出)
+            prediction = run_inference(
+                test_file_path=file_path,
+                strategy=strategy,
+                threshold=threshold,
+                model_dir=model_dir,
+                verbose=False  # 批次預測時不顯示每個檔案的詳細輸出
+            )
+
+            results.append({
+                'file_name': file_name,
+                'prediction': prediction,
+                'prediction_label': 'state2' if prediction == 1 else 'state1'
+            })
+
+        except Exception as e:
+            print(f"\n警告: 處理 {file_name} 時發生錯誤: {e}")
+            results.append({
+                'file_name': file_name,
+                'prediction': -1,
+                'prediction_label': 'ERROR'
+            })
+
+    # 將結果儲存為 CSV
+    output_file = os.path.join(output_dir, 'predictions.csv')
+    df_results = pd.DataFrame(results)
+    df_results.to_csv(output_file, index=False, encoding='utf-8-sig')
+
+    print(f"\n--- 預測完成 ---")
+    print(f"總檔案數: {len(results)}")
+    print(f"預測為 state1 (正常): {sum(1 for r in results if r['prediction'] == 0)} 個")
+    print(f"預測為 state2 (異常): {sum(1 for r in results if r['prediction'] == 1)} 個")
+    if any(r['prediction'] == -1 for r in results):
+        print(f"錯誤: {sum(1 for r in results if r['prediction'] == -1)} 個")
+    print(f"\n結果已儲存至: {output_file}")
+
+    # 顯示結果摘要表格
+    print("\n--- 預測結果 ---")
+    print(df_results.to_string(index=False))
+
+    return results
 
 
 if __name__ == "__main__":
