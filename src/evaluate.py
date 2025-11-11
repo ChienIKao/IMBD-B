@@ -8,7 +8,6 @@ import joblib
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 使用非交互式後端
-plt.rcParams['font.family'] = ['DejaVu Sans', 'Arial', 'sans-serif']  # 使用英文字體
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 import seaborn as sns
 
