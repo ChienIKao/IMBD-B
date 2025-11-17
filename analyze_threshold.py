@@ -23,6 +23,21 @@ def analyze_all_test_files(model_dir="./models"):
     WINDOW_SIZE = 500
     STEP_SIZE = 50
 
+    # 嘗試載入由 K-Fold validation 計算出的 golden threshold
+    threshold_info_path = os.path.join(model_dir, "threshold_info.joblib")
+    golden_file_threshold = None
+    golden_window_threshold = 0.5
+    if os.path.exists(threshold_info_path):
+        try:
+            threshold_info = joblib.load(threshold_info_path)
+            golden_file_threshold = float(threshold_info.get("file_level_threshold", 0.5))
+            golden_window_threshold = float(threshold_info.get("window_level_threshold", 0.5))
+            print(f"載入 golden threshold 於: {threshold_info_path}")
+            print(f"  file_level_threshold = {golden_file_threshold:.4f}")
+            print(f"  window_level_threshold = {golden_window_threshold:.4f}")
+        except Exception as e:
+            print(f"警告: 讀取 threshold_info.joblib 失敗: {e}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 載入 scaler
@@ -92,7 +107,8 @@ def analyze_all_test_files(model_dir="./models"):
             probs = torch.sigmoid(outputs).cpu().numpy().flatten()
 
         # 計算異常比例
-        abnormal_count = np.sum(probs > 0.5)
+        # window 層級使用 threshold_info 中的設定 (若無則為 0.5)
+        abnormal_count = np.sum(probs > golden_window_threshold)
         total_windows = len(probs)
         abnormal_ratio = abnormal_count / total_windows
 
@@ -129,8 +145,20 @@ def analyze_all_test_files(model_dir="./models"):
 
     # 總結分析
     print("=== Threshold Effect Summary ===")
+
+    # 如果有 golden threshold，優先顯示其效果
+    if golden_file_threshold is not None:
+        correct_count = 0
+        for result in results:
+            pred = 1 if result['abnormal_ratio'] > golden_file_threshold else 0
+            if pred == result['true_label']:
+                correct_count += 1
+        accuracy = correct_count / len(results)
+        print(f"使用 golden file-level threshold {golden_file_threshold:.3f}: Accuracy {accuracy:.3f} ({correct_count}/{len(results)})")
+
+    # 仍然可以掃一組固定 threshold 作為參考
     thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
-    best_threshold = 0.1
+    best_threshold = thresholds[0]
     best_accuracy = 0.0
 
     for threshold in thresholds:
@@ -146,7 +174,7 @@ def analyze_all_test_files(model_dir="./models"):
             best_accuracy = accuracy
             best_threshold = threshold
 
-    print(f"\n🎯 Best threshold: {best_threshold} with accuracy {best_accuracy:.3f}")
+    print(f"\nBest threshold (grid [0.1,0.3,0.5,0.7,0.9]): {best_threshold} with accuracy {best_accuracy:.3f}")
 
     # 詳細分析
     print(f"\n=== Detailed Analysis ===")

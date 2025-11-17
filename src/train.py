@@ -39,11 +39,95 @@ WINDOW_SIZE = 500   # 滑動窗口大小 (可調整)
 STEP_SIZE = 50      # 滑動步長 (可調整)
 
 # 訓練參數
-EPOCHS = 30         # 訓練回合數 (可調整)
+EPOCHS = 50         # 訓練回合數 (可調整)
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 
-# --- 2. 訓練與驗證的輔助函數 ---
+# Early Stopping 參數
+EARLY_STOPPING_PATIENCE = 10  # 等待多少 epoch 沒有改善就停止
+EARLY_STOPPING_DELTA = 0.0001  # 最小改善量
+
+# --- 2. Early Stopping 類別 ---
+
+class EarlyStopping:
+    """
+    Early Stopping 機制
+
+    當驗證指標 (例如 F1 score) 在一定 epoch 內沒有改善時,停止訓練
+
+    Args:
+        patience (int): 等待多少 epoch 沒有改善就停止
+        delta (float): 最小改善量,小於此值視為沒有改善
+        mode (str): 'max' 表示指標越大越好, 'min' 表示指標越小越好
+        verbose (bool): 是否印出訊息
+    """
+
+    def __init__(self, patience=10, delta=0.0001, mode='max', verbose=True):
+        self.patience = patience
+        self.delta = delta
+        self.mode = mode
+        self.verbose = verbose
+
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.best_epoch = 0
+
+        if mode == 'max':
+            self.is_better = lambda score, best: score > best + delta
+        elif mode == 'min':
+            self.is_better = lambda score, best: score < best - delta
+        else:
+            raise ValueError("mode must be 'max' or 'min'")
+
+    def __call__(self, score, epoch):
+        """
+        檢查是否應該 early stop
+
+        Args:
+            score: 當前的驗證指標
+            epoch: 當前的 epoch
+
+        Returns:
+            bool: 是否改善 (True 表示有改善)
+        """
+        if self.best_score is None:
+            # 第一個 epoch
+            self.best_score = score
+            self.best_epoch = epoch
+            if self.verbose:
+                print(f"    [Early Stopping] 初始化 best score: {score:.4f}")
+            return True
+
+        if self.is_better(score, self.best_score):
+            # 有改善
+            if self.verbose:
+                print(f"    [Early Stopping] Score 改善 {self.best_score:.4f} -> {score:.4f} (改善 {abs(score - self.best_score):.4f})")
+            self.best_score = score
+            self.best_epoch = epoch
+            self.counter = 0
+            return True
+        else:
+            # 沒有改善
+            self.counter += 1
+            if self.verbose:
+                print(f"    [Early Stopping] Score 沒有改善 ({self.counter}/{self.patience}), 當前: {score:.4f}, 最佳: {self.best_score:.4f}")
+
+            if self.counter >= self.patience:
+                self.early_stop = True
+                if self.verbose:
+                    print(f"    [Early Stopping] ⚠️  觸發 Early Stopping! 最佳 epoch: {self.best_epoch}, 最佳 score: {self.best_score:.4f}")
+
+            return False
+
+    def reset(self):
+        """重置 Early Stopping 狀態"""
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.best_epoch = 0
+
+# --- 3. 訓練與驗證的輔助函數 ---
 
 def train_epoch(model, data_loader, criterion, optimizer, device):
     """
@@ -256,16 +340,23 @@ def plot_cv_summary(cv_f1_scores, save_dir):
 
 # --- 4. 主要訓練執行函數 ---
 
-def run_training(random_state=None):
+def run_training(random_state=None, use_early_stopping=True, early_stopping_patience=None, early_stopping_delta=None):
     """
     執行完整的訓練流程
 
     Args:
         random_state (int, optional): 隨機種子碼。如果為 None,則使用全域設定 RANDOM_STATE
+        use_early_stopping (bool, optional): 是否使用 Early Stopping。預設為 True
+        early_stopping_patience (int, optional): Early Stopping 耐心值。如果為 None,則使用全域設定 EARLY_STOPPING_PATIENCE
+        early_stopping_delta (float, optional): Early Stopping 最小改善量。如果為 None,則使用全域設定 EARLY_STOPPING_DELTA
     """
 
     # 使用傳入的 random_state 或預設值
     seed = random_state if random_state is not None else RANDOM_STATE
+
+    # 使用傳入的 early stopping 參數或預設值
+    es_patience = early_stopping_patience if early_stopping_patience is not None else EARLY_STOPPING_PATIENCE
+    es_delta = early_stopping_delta if early_stopping_delta is not None else EARLY_STOPPING_DELTA
 
     # 創建時間戳記的訓練目錄
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -282,6 +373,10 @@ def run_training(random_state=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"--- 將使用 {device} 進行訓練 ---")
     print(f"--- 隨機種子碼: {seed} ---")
+    print(f"--- Early Stopping: {'啟用' if use_early_stopping else '停用'} ---")
+    if use_early_stopping:
+        print(f"--- Early Stopping Patience: {es_patience} epochs ---")
+        print(f"--- Early Stopping Min Delta: {es_delta} ---")
 
     # --- A. 載入所有原始資料並重新分割 ---
     print("--- 載入原始資料並重新分割 ---")
@@ -353,6 +448,9 @@ def run_training(random_state=None):
     kfold = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=seed)
     cv_f1_scores = []
     fold_histories = []  # 記錄每一折的訓練歷史
+    # 用於跨所有 fold 的 validation 檔案層級 threshold 搜尋
+    val_file_ratios = []   # 每個 validation 檔案的異常比例
+    val_file_labels = []   # 對應的檔案真實標籤
 
     print(f"\n--- 開始 {N_SPLITS} 折交叉驗證 ---")
 
@@ -390,6 +488,17 @@ def run_training(random_state=None):
 
         best_val_f1 = -1
 
+        # 初始化 Early Stopping (每一折都重新初始化)
+        if use_early_stopping:
+            early_stopping = EarlyStopping(
+                patience=es_patience,
+                delta=es_delta,
+                mode='max',  # F1 score 越大越好
+                verbose=True
+            )
+        else:
+            early_stopping = None
+
         # 記錄這一折的訓練歷史
         fold_history = {
             'train_loss': [],
@@ -417,14 +526,96 @@ def run_training(random_state=None):
                 model_save_path = os.path.join(MODEL_DIR, f"model_fold_{fold+1}_best.pth")
                 torch.save(model_instance.state_dict(), model_save_path)
 
+            # 檢查 Early Stopping
+            if use_early_stopping:
+                improved = early_stopping(val_f1, epoch)
+
+                # 如果觸發 early stopping,跳出迴圈
+                if early_stopping.early_stop:
+                    print(f"  ✓ Early Stopping 觸發於 Epoch {epoch+1}, 最佳 F1 出現在 Epoch {early_stopping.best_epoch+1}: {best_val_f1:.4f}")
+                    break
+
         cv_f1_scores.append(best_val_f1)
         fold_histories.append(fold_history)
-        print(f"  第 {fold+1} 折 最佳 F1: {best_val_f1:.4f}")
+
+        # --- 使用該折最佳模型在檔案層級計算異常比例，供後續 threshold 搜尋 ---
+        print("  使用最佳模型計算此折 validation 檔案的異常比例 (file-level ratios)")
+
+        # 確保使用最佳權重
+        best_model_path = os.path.join(MODEL_DIR, f"model_fold_{fold+1}_best.pth")
+        model_instance.load_state_dict(torch.load(best_model_path, map_location=device))
+        model_instance.eval()
+
+        window_level_threshold = 0.5
+
+        for data_array, true_label in zip(val_files_list, val_labels_list):
+            scaled_data = scaler.transform(data_array)
+            X_windows, _ = data_loader.create_windows([scaled_data], [0], WINDOW_SIZE, STEP_SIZE)
+            if len(X_windows) == 0:
+                continue
+
+            X_tensor = torch.tensor(X_windows.transpose(0, 2, 1), dtype=torch.float32).to(device)
+            with torch.no_grad():
+                outputs = model_instance(X_tensor)
+                probs = torch.sigmoid(outputs).cpu().numpy().flatten()
+
+            abnormal_ratio = float(np.mean(probs > window_level_threshold))
+            val_file_ratios.append(abnormal_ratio)
+            val_file_labels.append(int(true_label))
+        if use_early_stopping:
+            print(f"  第 {fold+1} 折 最佳 F1: {best_val_f1:.4f} (訓練了 {len(fold_history['train_loss'])} 個 epochs)")
+        else:
+            print(f"  第 {fold+1} 折 最佳 F1: {best_val_f1:.4f}")
+
+
 
     # --- C. 顯示 K-Fold 總結 ---
     print("\n--- K-Fold 交叉驗證總結 ---")
     print(f"所有 F1 分數: {cv_f1_scores}")
     print(f"平均 F1: {np.mean(cv_f1_scores):.4f} +/- {np.std(cv_f1_scores):.4f}")
+
+    # --- 使用所有 fold 的 validation 檔案層級結果，尋找 golden threshold ---
+    print("\n--- 使用 K-Fold validation 檔案尋找檔案層級 golden threshold ---")
+    if len(val_file_ratios) > 0:
+        val_file_ratios_np = np.array(val_file_ratios)
+        val_file_labels_np = np.array(val_file_labels)
+
+        thresholds = np.linspace(0.0, 1.0, 51)
+        best_thr = 0.5
+        best_f1 = -1.0
+        best_acc = 0.0
+
+        for thr in thresholds:
+            preds = (val_file_ratios_np > thr).astype(int)
+            acc = accuracy_score(val_file_labels_np, preds)
+            f1 = f1_score(val_file_labels_np, preds)
+            print(f"  Threshold {thr:.2f} -> File-level Acc: {acc:.4f} | File-level F1: {f1:.4f}")
+            if f1 > best_f1:
+                best_f1 = f1
+                best_acc = acc
+                best_thr = thr
+
+        print(f"\n  Golden file-level threshold (from K-Fold validation): {best_thr:.4f}")
+        print(f"  F1: {best_f1:.4f} | Acc: {best_acc:.4f}")
+
+        normal_ratios = val_file_ratios_np[val_file_labels_np == 0]
+        abnormal_ratios = val_file_ratios_np[val_file_labels_np == 1]
+        if len(normal_ratios) > 0 and len(abnormal_ratios) > 0:
+            print(f"  Normal max abnormal_ratio: {normal_ratios.max():.4f}")
+            print(f"  Abnormal min abnormal_ratio: {abnormal_ratios.min():.4f}")
+
+        # 儲存 threshold 資訊到模型資料夾
+        threshold_info = {
+            'file_level_threshold': float(best_thr),
+            'window_level_threshold': float(window_level_threshold),
+            'source': 'kfold_validation',
+            'n_validation_files': int(len(val_file_ratios)),
+        }
+        threshold_info_path = os.path.join(MODEL_DIR, "threshold_info.joblib")
+        joblib.dump(threshold_info, threshold_info_path)
+        print(f"  Threshold info saved to: {threshold_info_path}")
+    else:
+        print("  無法計算 golden threshold: val_file_ratios 為空")
 
     # 繪製 K-Fold 訓練曲線和摘要
     plot_training_curves(fold_histories, RES_DIR)
@@ -457,11 +648,31 @@ def run_training(random_state=None):
         'train_loss': []
     }
 
+    # 初始化 Early Stopping for final model (基於訓練 loss)
+    if use_early_stopping:
+        final_early_stopping = EarlyStopping(
+            patience=es_patience,
+            delta=es_delta,
+            mode='min',  # Loss 越小越好
+            verbose=True
+        )
+    else:
+        final_early_stopping = None
+
     # 6. Epoch 迴圈 (只訓練，不驗證)
     for epoch in range(EPOCHS):
         train_loss = train_epoch(final_model, final_train_loader, criterion, optimizer, device)
         final_history['train_loss'].append(train_loss)
         print(f"  Epoch {epoch+1}/{EPOCHS} -> Train Loss: {train_loss:.4f}")
+
+        # 檢查 Early Stopping (基於訓練 loss)
+        if use_early_stopping:
+            improved = final_early_stopping(train_loss, epoch)
+
+            # 如果觸發 early stopping,跳出迴圈
+            if final_early_stopping.early_stop:
+                print(f"  ✓ Early Stopping 觸發於 Epoch {epoch+1}, 最佳 loss 出現在 Epoch {final_early_stopping.best_epoch+1}: {final_early_stopping.best_score:.4f}")
+                break
 
     # 7. 儲存最終模型
     final_model_path = os.path.join(MODEL_DIR, "final_model.pth")
@@ -476,6 +687,11 @@ def run_training(random_state=None):
     print(f"最終模型儲存至: {final_model_path}")
     print(f"最終 Scaler 儲存至: {final_scaler_path}")
     print(f"K-Fold 模型儲存在同一資料夾中")
+    if use_early_stopping:
+        print(f"最終模型訓練了 {len(final_history['train_loss'])} 個 epochs (Early Stopping: 啟用)")
+    else:
+        print(f"最終模型訓練了 {len(final_history['train_loss'])} 個 epochs")
+
 
     return MODEL_DIR  # 回傳模型目錄路徑，供其他函數使用
 

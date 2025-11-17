@@ -207,7 +207,7 @@ def plot_threshold_analysis(test_data_list, test_labels_list, model_instance, sc
         'best_acc_threshold': thresholds[best_acc_idx]
     }
 
-def evaluate_on_test_set(threshold=0.3, model_dir=None):
+def evaluate_on_test_set(threshold=None, model_dir=None):
     """
     在測試集上評估最終模型的性能
 
@@ -220,7 +220,7 @@ def evaluate_on_test_set(threshold=0.3, model_dir=None):
     if model_dir is None:
         model_dir = DEFAULT_MODEL_DIR
 
-    print(f"--- 開始測試集評估 (閾值: {threshold}) ---")
+    print(f"--- 開始測試集評估 (初始檔案級閾值: {threshold}) ---")
     print(f"--- 使用模型目錄: {model_dir} ---")
 
     # 創建對應的結果目錄
@@ -236,6 +236,33 @@ def evaluate_on_test_set(threshold=0.3, model_dir=None):
         res_dir = os.path.join(model_dir, "plots")
         os.makedirs(res_dir, exist_ok=True)
         print(f"--- 評估圖表將儲存至: {res_dir} ---")
+
+    # 嘗試從模型目錄載入 golden threshold 設定
+    threshold_info_path = os.path.join(model_dir, "threshold_info.joblib")
+    golden_file_threshold = None
+    golden_window_threshold = 0.5
+    if os.path.exists(threshold_info_path):
+        try:
+            threshold_info = joblib.load(threshold_info_path)
+            golden_file_threshold = float(threshold_info.get("file_level_threshold", 0.3))
+            golden_window_threshold = float(threshold_info.get("window_level_threshold", 0.5))
+            print(f"偵測到 golden threshold 設定檔: {threshold_info_path}")
+            print(f"  golden file_level_threshold = {golden_file_threshold:.4f}")
+            print(f"  golden window_level_threshold = {golden_window_threshold:.4f}")
+
+            # 規則：若 threshold 為 None (代表使用者沒有在 CLI 指定)，則自動改用 golden threshold
+            if threshold is None:
+                threshold = golden_file_threshold
+                print(f"  檔案級閾值自動改用 golden threshold: {threshold:.4f}")
+            else:
+                print(f"  使用者自訂 threshold={threshold:.4f}，保留此設定")
+        except Exception as e:
+            print(f"警告: 讀取 threshold_info.joblib 失敗: {e}")
+
+    # 若仍未設定 threshold，使用預設 0.3
+    if threshold is None:
+        threshold = 0.3
+        print(f"  未找到 golden threshold，使用預設檔案級閾值: {threshold:.4f}")
 
     # 設置裝置
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -376,7 +403,7 @@ def evaluate_on_test_set(threshold=0.3, model_dir=None):
     # 繪製機率分佈
     plot_probability_distribution(all_probs, all_labels, res_dir)
 
-    # 進行閾值分析
+    # 進行閾值分析 (此處仍固定使用 window-level threshold=0.5，file-level threshold 掃描一整個 grid)
     threshold_results = plot_threshold_analysis(test_data_list, test_labels_list, model_instance, scaler, device, res_dir)
 
     # --- 10. 檔案級別的評估 ---

@@ -1,5 +1,3 @@
-# 請將此檔案儲存為: main.py (放在專案根目錄)
-
 import argparse
 import os
 import sys
@@ -39,6 +37,24 @@ def main():
         default=None,
         help="隨機種子碼 (default: 使用 train.py 中的預設值 78)",
     )
+    # 添加 Early Stopping 相關參數
+    train_parser.add_argument(
+        "--patience",
+        type=int,
+        default=None,
+        help="Early Stopping 耐心值 - 等待多少 epoch 沒有改善就停止 (default: 10)",
+    )
+    train_parser.add_argument(
+        "--min-delta",
+        type=float,
+        default=None,
+        help="Early Stopping 最小改善量 - 小於此值視為沒有改善 (default: 0.0001)",
+    )
+    train_parser.add_argument(
+        "--no-early-stopping",
+        action="store_true",
+        help="停用 Early Stopping 機制",
+    )
 
     # --- 4. "evaluate" 指令 ---
     # 當使用者輸入 'python main.py evaluate' 時:
@@ -49,8 +65,8 @@ def main():
     evaluate_parser.add_argument(
         "--threshold",
         type=float,
-        default=0.1,
-        help="檔案級別投票閾值 (default: 0.1)",
+        default=None,
+        help="檔案級別投票閾值 (不指定則使用 golden threshold)",
     )
     # 添加可選的模型目錄參數
     evaluate_parser.add_argument(
@@ -117,11 +133,26 @@ def main():
 
     if args.command == "train":
         print("--- 啟動 [訓練] 流程 ---")
+
+        # 準備訓練參數
+        train_kwargs = {}
+
         if args.seed is not None:
             print(f"--- 使用自訂隨機種子碼: {args.seed} ---")
-            train.run_training(random_state=args.seed)
+            train_kwargs['random_state'] = args.seed
+
+        if args.no_early_stopping:
+            print("--- Early Stopping 已停用 ---")
+            train_kwargs['use_early_stopping'] = False
         else:
-            train.run_training()
+            if args.patience is not None:
+                print(f"--- Early Stopping Patience: {args.patience} ---")
+                train_kwargs['early_stopping_patience'] = args.patience
+            if args.min_delta is not None:
+                print(f"--- Early Stopping Min Delta: {args.min_delta} ---")
+                train_kwargs['early_stopping_delta'] = args.min_delta
+
+        train.run_training(**train_kwargs)
         print("--- [訓練] 流程完畢 ---")
 
     elif args.command == "evaluate":
