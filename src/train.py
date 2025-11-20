@@ -26,8 +26,8 @@ MODEL_BASE_DIR = './models' # 基礎模型目錄
 RES_BASE_DIR = './res' # 結果圖表目錄
 
 # 資料分割參數
-TRAIN_RATIO = 0.7         # 訓練資料比例 (80%)
-TEST_RATIO = 0.3          # 測試資料比例 (20%)
+TRAIN_RATIO = 0.5         # 訓練資料比例 (80%)
+TEST_RATIO = 0.5          # 測試資料比例 (20%)
 
 # K-Fold 參數
 N_SPLITS = 5          # 5 折交叉驗證
