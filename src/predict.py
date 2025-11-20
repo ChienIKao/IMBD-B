@@ -35,14 +35,14 @@ def aggregate_predictions(snippet_preds, strategy="majority_vote", threshold=0.1
                            (例如：只要有 10% 的片段被判為異常，整個檔案就為異常)
 
     Returns:
-        int: 0 (正常) 或 1 (異常)
+        int: 1 (正常) 或 2 (異常)
     """
 
     if strategy == "mean_prob":
         # 策略 A: 平均機率法
         # 計算所有片段的平均異常機率
         mean_prob = np.mean(snippet_preds)
-        final_prediction = 1 if mean_prob > 0.5 else 0
+        final_prediction_binary = 1 if mean_prob > 0.5 else 0
 
     elif strategy == "majority_vote":
         # 策略 B: 投票法 (推薦用於異常檢測)
@@ -53,10 +53,14 @@ def aggregate_predictions(snippet_preds, strategy="majority_vote", threshold=0.1
         abnormal_ratio = np.mean(votes)
 
         # 3. 如果異常票的比例超過閾值，則判為異常
-        final_prediction = 1 if abnormal_ratio > threshold else 0
+        final_prediction_binary = 1 if abnormal_ratio > threshold else 0
 
     else:
         raise ValueError("未知的彙總策略")
+
+    # 將內部 0/1 標籤映射為對外 1/2:
+    # 0 (正常) -> 1, 1 (異常) -> 2
+    final_prediction = 1 if final_prediction_binary == 0 else 2
 
     return final_prediction
 
@@ -76,7 +80,7 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
         verbose (bool): 是否顯示詳細輸出
 
     Returns:
-        int: 最終預測 (0 或 1)
+        int: 最終預測 (1=正常, 2=異常)
     """
 
     # 如果沒有指定模型目錄，使用預設目錄
@@ -179,7 +183,7 @@ def run_inference(test_file_path, strategy="majority_vote", threshold=0.1, model
     )
 
     if verbose:
-        result_str = "狀態 2 (異常)" if final_prediction == 1 else "狀態 1 (正常)"
+        result_str = "狀態 2 (異常)" if final_prediction == 2 else "狀態 1 (正常)"
         print(f"\n--- 最終預測結果 ---")
         print(f"檔案: {os.path.basename(test_file_path)}")
         print(f"預測: {final_prediction} ( {result_str} )")
@@ -248,7 +252,7 @@ def batch_predict(pred_dir, model_dir, threshold, output_dir, strategy="majority
             results.append({
                 'file_name': file_name,
                 'prediction': prediction,
-                'prediction_label': 'state2' if prediction == 1 else 'state1'
+                'prediction_label': 'state2' if prediction == 2 else 'state1'
             })
 
         except Exception as e:
@@ -266,8 +270,8 @@ def batch_predict(pred_dir, model_dir, threshold, output_dir, strategy="majority
 
     print(f"\n--- 預測完成 ---")
     print(f"總檔案數: {len(results)}")
-    print(f"預測為 state1 (正常): {sum(1 for r in results if r['prediction'] == 0)} 個")
-    print(f"預測為 state2 (異常): {sum(1 for r in results if r['prediction'] == 1)} 個")
+    print(f"預測為 state1 (正常, label=1): {sum(1 for r in results if r['prediction'] == 1)} 個")
+    print(f"預測為 state2 (異常, label=2): {sum(1 for r in results if r['prediction'] == 2)} 個")
     if any(r['prediction'] == -1 for r in results):
         print(f"錯誤: {sum(1 for r in results if r['prediction'] == -1)} 個")
     print(f"\n結果已儲存至: {output_file}")

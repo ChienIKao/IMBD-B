@@ -1,6 +1,7 @@
 # 建議將此檔案儲存為: src/train.py
 
 import os
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,7 +12,7 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非交互式後端
 # 不指定字體,使用系統預設字體 (競賽環境無外網無法下載字體)
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report, roc_auc_score
 from datetime import datetime
 
 # 載入我們自定義的模組
@@ -25,21 +26,17 @@ RAW_DATA_DIR = './raw_data'  # 原始資料路徑
 MODEL_BASE_DIR = './models' # 基礎模型目錄
 RES_BASE_DIR = './res' # 結果圖表目錄
 
-# 資料分割參數
-TRAIN_RATIO = 0.7         # 訓練資料比例 (80%)
-TEST_RATIO = 0.3          # 測試資料比例 (20%)
-
 # K-Fold 參數
 N_SPLITS = 5          # 5 折交叉驗證
-RANDOM_STATE = 78   # 隨機種子碼
+RANDOM_STATE = 42   # 隨機種子碼
 # [cite_start]競賽題目要求 F1 score 為決勝標準 [cite: 97]，我們可以用它來儲存最佳模型
 
 # 資料處理參數
 WINDOW_SIZE = 500   # 滑動窗口大小 (可調整)
-STEP_SIZE = 50      # 滑動步長 (可調整)
+STEP_SIZE = 250      # 滑動步長 (可調整)
 
 # 訓練參數
-EPOCHS = 50         # 訓練回合數 (可調整)
+EPOCHS = 100         # 訓練回合數 (可調整)
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 
@@ -47,7 +44,22 @@ LEARNING_RATE = 0.001
 EARLY_STOPPING_PATIENCE = 10  # 等待多少 epoch 沒有改善就停止
 EARLY_STOPPING_DELTA = 0.0001  # 最小改善量
 
-# --- 2. Early Stopping 類別 ---
+# --- 2. 隨機種子設定工具函式 ---
+
+
+def set_seed(seed: int):
+    """統一設定隨機種子,提高實驗可重現性"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # 讓 cuDNN 使用決定性實作,避免非決定性行為
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# --- 3. Early Stopping 類別 ---
 
 class EarlyStopping:
     """
@@ -127,7 +139,7 @@ class EarlyStopping:
         self.early_stop = False
         self.best_epoch = 0
 
-# --- 3. 訓練與驗證的輔助函數 ---
+# --- 4. 訓練與驗證的輔助函數 ---
 
 def train_epoch(model, data_loader, criterion, optimizer, device):
     """
@@ -196,10 +208,11 @@ def validate_epoch(model, data_loader, criterion, device):
     # [cite_start]計算準確度 [cite: 95] [cite_start]和 F1 Score [cite: 97]
     acc = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds)
+    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
 
-    return total_loss / len(data_loader), acc, f1
+    return total_loss / len(data_loader), acc, f1, (tn, fp, fn, tp)
 
-# --- 3. 繪圖功能函數 ---
+# --- 5. 繪圖功能函數 ---
 
 def plot_training_curves(fold_histories, save_dir):
     """
@@ -338,7 +351,7 @@ def plot_cv_summary(cv_f1_scores, save_dir):
     plt.close()
     print(f"Cross-validation summary saved to: {save_path}")
 
-# --- 4. 主要訓練執行函數 ---
+# --- 6. 主要訓練執行函數 ---
 
 def run_training(random_state=None, use_early_stopping=True, early_stopping_patience=None, early_stopping_delta=None):
     """
@@ -351,17 +364,25 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
         early_stopping_delta (float, optional): Early Stopping 最小改善量。如果為 None,則使用全域設定 EARLY_STOPPING_DELTA
     """
 
-    # 使用傳入的 random_state 或預設值
+    # 使用傳入的 random_state 或預設值,並統一設定隨機種子
     seed = random_state if random_state is not None else RANDOM_STATE
+    set_seed(seed)
 
     # 使用傳入的 early stopping 參數或預設值
     es_patience = early_stopping_patience if early_stopping_patience is not None else EARLY_STOPPING_PATIENCE
     es_delta = early_stopping_delta if early_stopping_delta is not None else EARLY_STOPPING_DELTA
 
-    # 創建時間戳記的訓練目錄
+    # 創建命名含 train ratio 與 overlap 的訓練目錄，並保留時間戳記
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    MODEL_DIR = os.path.join(MODEL_BASE_DIR, f"training_{timestamp}")
-    RES_DIR = os.path.join(RES_BASE_DIR, f"training_{timestamp}")
+
+    epochs = EPOCHS
+    overlap_ratio = 1 - STEP_SIZE / WINDOW_SIZE     # 例如 1 - 450/500 = 0.1
+    overlap_str = f"{int(overlap_ratio * 100)}"    # 0.1 -> "10"
+
+    folder_name = f"model_{epochs}epochs_{overlap_str}overlap_{timestamp}"
+
+    MODEL_DIR = os.path.join(MODEL_BASE_DIR, folder_name)
+    RES_DIR = os.path.join(RES_BASE_DIR, folder_name)
 
     # 確保模型儲存目錄存在
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -378,8 +399,8 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
         print(f"--- Early Stopping Patience: {es_patience} epochs ---")
         print(f"--- Early Stopping Min Delta: {es_delta} ---")
 
-    # --- A. 載入所有原始資料並重新分割 ---
-    print("--- 載入原始資料並重新分割 ---")
+    # --- A. 載入所有原始資料 (不再先切出獨立測試集) ---
+    print("--- 載入原始資料 (全部作為可用資料) ---")
 
     # 載入所有原始資料並取得檔案名稱資訊
     all_data_list, all_labels_list, file_names = data_loader.load_all_data_from_raw_with_names(RAW_DATA_DIR)
@@ -388,57 +409,15 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
     print(f"  - 狀態1 (正常): {sum(1 for label in all_labels_list if label == 0)} 個檔案")
     print(f"  - 狀態2 (異常): {sum(1 for label in all_labels_list if label == 1)} 個檔案")
 
-    # 使用 train_test_split 重新分割資料
-    train_data_list, test_data_list, train_labels_list, test_labels_list, train_indices, test_indices = train_test_split(
-        all_data_list,
-        all_labels_list,
-        list(range(len(file_names))),  # 加入索引以追蹤檔案名稱
-        test_size=TEST_RATIO,
-        random_state=seed,
-        stratify=all_labels_list  # 保持類別比例
-    )
+    print(f"\n=== 檔案列表 (種子碼: {seed}) ===")
+    state1_files = [name for name, label in zip(file_names, all_labels_list) if label == 0]
+    state2_files = [name for name, label in zip(file_names, all_labels_list) if label == 1]
+    print(f"狀態1: {sorted(state1_files)}")
+    print(f"狀態2: {sorted(state2_files)}")
 
-    # 取得對應的檔案名稱
-    train_file_names = [file_names[i] for i in train_indices]
-    test_file_names = [file_names[i] for i in test_indices]
-
-    print(f"\n重新分割後:")
-    print(f"  訓練資料: {len(train_data_list)} 個檔案")
-    print(f"    - 狀態1: {sum(1 for label in train_labels_list if label == 0)} 個")
-    print(f"    - 狀態2: {sum(1 for label in train_labels_list if label == 1)} 個")
-    print(f"  測試資料: {len(test_data_list)} 個檔案")
-    print(f"    - 狀態1: {sum(1 for label in test_labels_list if label == 0)} 個")
-    print(f"    - 狀態2: {sum(1 for label in test_labels_list if label == 1)} 個")
-
-    # 顯示詳細的檔案分割資訊
-    print(f"\n=== 詳細分割資訊 (種子碼: {seed}) ===")
-    train_state1_files = [name for name, label in zip(train_file_names, train_labels_list) if label == 0]
-    train_state2_files = [name for name, label in zip(train_file_names, train_labels_list) if label == 1]
-    test_state1_files = [name for name, label in zip(test_file_names, test_labels_list) if label == 0]
-    test_state2_files = [name for name, label in zip(test_file_names, test_labels_list) if label == 1]
-
-    print(f"訓練集檔案:")
-    print(f"  狀態1: {sorted(train_state1_files)}")
-    print(f"  狀態2: {sorted(train_state2_files)}")
-    print(f"測試集檔案:")
-    print(f"  狀態1: {sorted(test_state1_files)}")
-    print(f"  狀態2: {sorted(test_state2_files)}")
-
-    # 將測試資料儲存到模型目錄中，供後續評估使用
-    test_data_path = os.path.join(MODEL_DIR, "test_data.joblib")
-    joblib.dump({
-        'test_data_list': test_data_list,
-        'test_labels_list': test_labels_list,
-        'test_file_names': test_file_names,  # 同時儲存檔案名稱
-        'random_state': seed  # 儲存種子碼
-    }, test_data_path)
-    print(f"\n測試資料已儲存至: {test_data_path}")
-    print(f"(包含檔案名稱和種子碼資訊)")
-
-    # 轉為 NumPy 陣列，以利 K-Fold 切分
-    # 注意：K-Fold 是在「檔案」層級上操作的
-    all_data_np = np.array(train_data_list, dtype=object)  # 只使用訓練資料
-    all_labels_np = np.array(train_labels_list)
+    # 轉為 NumPy 陣列，以利 K-Fold 切分 (在所有檔案上做 K-Fold)
+    all_data_np = np.array(all_data_list, dtype=object)
+    all_labels_np = np.array(all_labels_list)
 
     # 從資料中動態獲取特徵數量
     NUM_FEATURES = all_data_np[0].shape[1]
@@ -448,6 +427,7 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
     kfold = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=seed)
     cv_f1_scores = []
     fold_histories = []  # 記錄每一折的訓練歷史
+    cv_conf_mats = []    # 記錄每一折的混淆矩陣 (tn, fp, fn, tp)
     # 用於跨所有 fold 的 validation 檔案層級 threshold 搜尋
     val_file_ratios = []   # 每個 validation 檔案的異常比例
     val_file_labels = []   # 對應的檔案真實標籤
@@ -494,7 +474,7 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
                 patience=es_patience,
                 delta=es_delta,
                 mode='max',  # F1 score 越大越好
-                verbose=True
+                verbose=False  # 關閉詳細 early stopping log
             )
         else:
             early_stopping = None
@@ -507,10 +487,10 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
             'val_f1': []
         }
 
-        # 7. Epoch 迴圈
+        # 7. Epoch 迴圈 (簡化輸出)
         for epoch in range(EPOCHS):
             train_loss = train_epoch(model_instance, train_loader, criterion, optimizer, device)
-            val_loss, val_acc, val_f1 = validate_epoch(model_instance, val_loader, criterion, device)
+            val_loss, val_acc, val_f1, (tn, fp, fn, tp) = validate_epoch(model_instance, val_loader, criterion, device)
 
             # 記錄歷史
             fold_history['train_loss'].append(train_loss)
@@ -518,7 +498,9 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
             fold_history['val_acc'].append(val_acc)
             fold_history['val_f1'].append(val_f1)
 
-            print(f"  Epoch {epoch+1}/{EPOCHS} -> Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}")
+            # 僅每 10 個 epoch 或最後一個 epoch 印一次，減少輸出長度
+            if (epoch + 1) % 10 == 0 or (epoch + 1) == EPOCHS:
+                print(f"  Epoch {epoch+1}/{EPOCHS} -> Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.4f}")
 
             # [cite_start]儲存 F1 [cite: 97] 最高的模型
             if val_f1 > best_val_f1:
@@ -532,11 +514,11 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
 
                 # 如果觸發 early stopping,跳出迴圈
                 if early_stopping.early_stop:
-                    print(f"  ✓ Early Stopping 觸發於 Epoch {epoch+1}, 最佳 F1 出現在 Epoch {early_stopping.best_epoch+1}: {best_val_f1:.4f}")
                     break
 
         cv_f1_scores.append(best_val_f1)
         fold_histories.append(fold_history)
+        cv_conf_mats.append((tn, fp, fn, tp))
 
         # --- 使用該折最佳模型在檔案層級計算異常比例，供後續 threshold 搜尋 ---
         print("  使用最佳模型計算此折 validation 檔案的異常比例 (file-level ratios)")
@@ -546,7 +528,12 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
         model_instance.load_state_dict(torch.load(best_model_path, map_location=device))
         model_instance.eval()
 
+        # 窗口層級閾值 (判斷單一窗口是否為異常)
         window_level_threshold = 0.5
+
+        # 這一折用於「檔案層級」評估的真實標籤與預測標籤
+        fold_file_true = []
+        fold_file_pred = []
 
         for data_array, true_label in zip(val_files_list, val_labels_list):
             scaled_data = scaler.transform(data_array)
@@ -559,9 +546,29 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
                 outputs = model_instance(X_tensor)
                 probs = torch.sigmoid(outputs).cpu().numpy().flatten()
 
+            # 檔案層級: 計算該檔案內「被判為異常的窗口比例」
             abnormal_ratio = float(np.mean(probs > window_level_threshold))
+
+            # 供所有 fold 的 golden threshold 搜尋使用
             val_file_ratios.append(abnormal_ratio)
             val_file_labels.append(int(true_label))
+
+            # 暫時先用 0.5 異常比例作為檔案層級預測閾值
+            file_level_pred = 1 if abnormal_ratio > 0.5 else 0
+            fold_file_true.append(int(true_label))
+            fold_file_pred.append(file_level_pred)
+
+        # 在檔案層級計算並印出此折的混淆矩陣與 classification report
+        if len(fold_file_true) > 0:
+            fold_file_true_np = np.array(fold_file_true)
+            fold_file_pred_np = np.array(fold_file_pred)
+            file_cm = confusion_matrix(fold_file_true_np, fold_file_pred_np)
+            file_report = classification_report(fold_file_true_np, fold_file_pred_np, digits=4)
+
+            print("\n  檔案層級 Confusion Matrix (此折 validation 檔案):")
+            print(file_cm)
+            print("  檔案層級 Classification Report (此折 validation 檔案):")
+            print(file_report)
         if use_early_stopping:
             print(f"  第 {fold+1} 折 最佳 F1: {best_val_f1:.4f} (訓練了 {len(fold_history['train_loss'])} 個 epochs)")
         else:
@@ -574,29 +581,56 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
     print(f"所有 F1 分數: {cv_f1_scores}")
     print(f"平均 F1: {np.mean(cv_f1_scores):.4f} +/- {np.std(cv_f1_scores):.4f}")
 
+    # 印出每折的 confusion matrix
+    print("\n各折驗證集 Confusion Matrix (tn, fp, fn, tp):")
+    for i, (tn, fp, fn, tp) in enumerate(cv_conf_mats, start=1):
+        print(f"  Fold {i}: tn={tn}, fp={fp}, fn={fn}, tp={tp}")
+
     # --- 使用所有 fold 的 validation 檔案層級結果，尋找 golden threshold ---
-    print("\n--- 使用 K-Fold validation 檔案尋找檔案層級 golden threshold ---")
+    print("\n--- 使用 K-Fold validation 檔案尋找檔案層級 golden threshold (Youden's J) ---")
     if len(val_file_ratios) > 0:
         val_file_ratios_np = np.array(val_file_ratios)
         val_file_labels_np = np.array(val_file_labels)
 
         thresholds = np.linspace(0.0, 1.0, 51)
         best_thr = 0.5
-        best_f1 = -1.0
+        best_J = -1.0
+        best_f1 = 0.0
         best_acc = 0.0
 
         for thr in thresholds:
             preds = (val_file_ratios_np > thr).astype(int)
             acc = accuracy_score(val_file_labels_np, preds)
             f1 = f1_score(val_file_labels_np, preds)
-            print(f"  Threshold {thr:.2f} -> File-level Acc: {acc:.4f} | File-level F1: {f1:.4f}")
-            if f1 > best_f1:
+
+            # 混淆矩陣: tn, fp, fn, tp
+            tn, fp, fn, tp = confusion_matrix(val_file_labels_np, preds).ravel()
+            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0  # sensitivity
+            tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0  # specificity
+            J = tpr + tnr - 1
+
+            # 不再逐一列印所有 threshold，只保留最佳者
+            if J > best_J:
+                best_J = J
                 best_f1 = f1
                 best_acc = acc
                 best_thr = thr
 
-        print(f"\n  Golden file-level threshold (from K-Fold validation): {best_thr:.4f}")
-        print(f"  F1: {best_f1:.4f} | Acc: {best_acc:.4f}")
+        print(f"\n  Golden file-level threshold (Youden's J 最大): {best_thr:.4f}")
+        print(f"  J: {best_J:.4f} | F1: {best_f1:.4f} | Acc: {best_acc:.4f}")
+
+        # 使用 golden threshold 再計算一次檔案層級 F1（與 best_f1 相同，但語意上標示清楚）
+        best_preds = (val_file_ratios_np > best_thr).astype(int)
+        file_level_f1 = f1_score(val_file_labels_np, best_preds)
+
+        # 使用 abnormal_ratio 當作連續 score，計算檔案層級 ROC AUC
+        try:
+            file_level_auc = roc_auc_score(val_file_labels_np, val_file_ratios_np)
+        except ValueError:
+            file_level_auc = float('nan')
+
+        print(f"  File-level F1 @ golden threshold: {file_level_f1:.4f}")
+        print(f"  File-level ROC AUC (using abnormal_ratio as score): {file_level_auc:.4f}")
 
         normal_ratios = val_file_ratios_np[val_file_labels_np == 0]
         abnormal_ratios = val_file_ratios_np[val_file_labels_np == 1]
@@ -659,11 +693,13 @@ def run_training(random_state=None, use_early_stopping=True, early_stopping_pati
     else:
         final_early_stopping = None
 
-    # 6. Epoch 迴圈 (只訓練，不驗證)
+    # 6. Epoch 迴圈 (只訓練，不驗證，簡化輸出)
     for epoch in range(EPOCHS):
         train_loss = train_epoch(final_model, final_train_loader, criterion, optimizer, device)
         final_history['train_loss'].append(train_loss)
-        print(f"  Epoch {epoch+1}/{EPOCHS} -> Train Loss: {train_loss:.4f}")
+        # 僅每 10 個 epoch 或最後一個 epoch 印一次
+        if (epoch + 1) % 10 == 0 or (epoch + 1) == EPOCHS:
+            print(f"  Epoch {epoch+1}/{EPOCHS} -> Train Loss: {train_loss:.4f}")
 
         # 檢查 Early Stopping (基於訓練 loss)
         if use_early_stopping:
